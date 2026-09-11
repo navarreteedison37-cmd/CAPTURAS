@@ -12,84 +12,43 @@ jobs:
       - name: Descargar el codigo del repositorio
         uses: actions/checkout@v4
 
-      - name: Instalar Java (requerido por Android)
+      - name: Instalar Java
         uses: actions/setup-java@v4
         with:
           distribution: 'zulu'
           java-version: '17'
 
-      - name: Instalar Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          channel: 'stable'
+      - name: Configurar Gradle
+        uses: gradle/actions/setup-gradle@v4
 
-      - name: Descargar dependencias del proyecto
-        run: flutter pub get
+      - name: Dar permisos al gradlew (si existe)
+        run: chmod +x ./gradlew || echo "No hay gradlew, se usara gradle directo"
 
-      - name: Generar carpetas nativas de Android (si faltan)
-        run: flutter create . --platforms=android
-
-      - name: Desactivar minificacion R8 y forzar firma (evita APK roto o sin firmar)
+      - name: Compilar el APK (version debug, firmada automaticamente)
         run: |
-          cat > patch_gradle.py << 'PYEOF'
-          import re, pathlib
+          if [ -f "./gradlew" ]; then
+            ./gradlew assembleDebug --stacktrace
+          else
+            gradle assembleDebug --stacktrace
+          fi
 
-          kts = pathlib.Path("android/app/build.gradle.kts")
-          gradle = pathlib.Path("android/app/build.gradle")
+      - name: Mostrar todos los APK generados
+        run: find . -name "*.apk" -exec ls -lh {} \;
 
-          def procesar(texto, kotlin):
-              if kotlin:
-                  texto = re.sub(r'isMinifyEnabled\s*=\s*true', 'isMinifyEnabled = false', texto)
-                  texto = re.sub(r'isShrinkResources\s*=\s*true', 'isShrinkResources = false', texto)
-                  if 'isMinifyEnabled' not in texto:
-                      texto = re.sub(r'release\s*\{', 'release {\n            isMinifyEnabled = false\n            isShrinkResources = false', texto, count=1)
-                  bloque_release = texto.split('release {', 1)[1].split('}')[0]
-                  if 'signingConfig' not in bloque_release:
-                      texto = re.sub(r'release\s*\{', 'release {\n            signingConfig = signingConfigs.getByName("debug")', texto, count=1)
-              else:
-                  texto = re.sub(r'minifyEnabled\s+true', 'minifyEnabled false', texto)
-                  texto = re.sub(r'shrinkResources\s+true', 'shrinkResources false', texto)
-                  if 'minifyEnabled' not in texto:
-                      texto = re.sub(r'release\s*\{', 'release {\n            minifyEnabled false\n            shrinkResources false', texto, count=1)
-                  bloque_release = texto.split('release {', 1)[1].split('}')[0]
-                  if 'signingConfig' not in bloque_release:
-                      texto = re.sub(r'release\s*\{', 'release {\n            signingConfig signingConfigs.debug', texto, count=1)
-              return texto
-
-          if kts.exists():
-              kts.write_text(procesar(kts.read_text(), True))
-              print("Parchado build.gradle.kts")
-          elif gradle.exists():
-              gradle.write_text(procesar(gradle.read_text(), False))
-              print("Parchado build.gradle")
-          PYEOF
-          python3 patch_gradle.py
-
-      - name: Mostrar el archivo ya parchado (para revisar)
-        run: cat android/app/build.gradle.kts || cat android/app/build.gradle
-
-      - name: Compilar el APK
-        run: flutter build apk --release
-
-      - name: Verificar que el APK este completo y firmado (falla si esta roto)
+      - name: Verificar que el APK este firmado
         run: |
-          echo "Todos los .apk generados en el proyecto:"
-          find build -name "*.apk" -exec ls -lh {} \;
-          APK="build/app/outputs/flutter-apk/app-release.apk"
-          if [ ! -f "$APK" ]; then
-            echo "ERROR: no se encontro $APK"
+          APK=$(find . -name "*.apk" | head -n 1)
+          if [ -z "$APK" ]; then
+            echo "ERROR: no se genero ningun APK"
             exit 1
           fi
-          echo "Verificando que incluya el motor de Flutter (libapp.so)..."
-          unzip -l "$APK" | grep -q "libapp.so" || { echo "ERROR: falta el motor de Flutter, el APK esta incompleto"; exit 1; }
-          echo "Verificando que incluya flutter_assets (tus plantillas Word)..."
-          unzip -l "$APK" | grep -q "flutter_assets" || { echo "ERROR: faltan los assets de Flutter (plantillas Word)"; exit 1; }
-          echo "Verificando que este firmado..."
+          echo "Revisando: $APK"
           unzip -l "$APK" | grep -qiE "\.RSA|\.DSA|\.EC$" || { echo "ERROR: el APK no esta firmado"; exit 1; }
-          echo "TODO CORRECTO: el APK esta completo y firmado."
+          echo "TODO CORRECTO: el APK esta firmado."
 
       - name: Publicar el APK como descarga
         uses: actions/upload-artifact@v4
         with:
-          name: app-release-apk
-          path: build/app/outputs/flutter-apk/app-release.apk
+          name: app-debug-apk
+          path: |
+            **/build/outputs/apk/debug/*.apk
